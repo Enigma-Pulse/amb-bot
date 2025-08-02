@@ -14,7 +14,7 @@ Telegram бот для проекта AMB с системой рефералов
 
 1. Клонируйте репозиторий:
 ```bash
-git clone https://github.com/ваш-username/amb-bot.git
+git clone https://github.com/Enigma-Pulse/amb-bot.git
 cd amb-bot
 ```
 
@@ -71,4 +71,4 @@ AMB/
 
 ## Лицензия
 
-MIT License 
+MIT License
