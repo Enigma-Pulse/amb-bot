@@ -98,16 +98,33 @@ class Database:
         # Создание таблицы разрешенных чатов
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS allowed_chats (
-                chat_username TEXT PRIMARY KEY
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER UNIQUE,
+                chat_title TEXT
             )
         ''')
         
-        # Создание таблицы промо-офферов
+        # Создание таблицы промо-предложений
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS promo_offers (
-                offer_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                cost INTEGER NOT NULL
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT,
+                description TEXT,
+                cost INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Создание таблицы для отслеживания преданных рефералов
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS loyal_referrals_tracking (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                referrer_id INTEGER,
+                referral_id INTEGER,
+                credited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(referrer_id, referral_id),
+                FOREIGN KEY(referrer_id) REFERENCES users(user_id),
+                FOREIGN KEY(referral_id) REFERENCES users(user_id)
             )
         ''')
         
@@ -358,16 +375,46 @@ class Database:
         return row[0] if row else None
     
     def update_screenshot_path(self, task_id, screenshot_path):
-        """Обновление пути к скриншоту"""
-        self.cursor.execute(
-            "UPDATE tasks SET screenshot_path = ?, status = 'awaiting_review' WHERE task_id = ?",
-            (screenshot_path, task_id)
-        )
-        self.conn.commit()
+        """Обновление пути к скриншоту для задания"""
+        try:
+            self.cursor.execute(
+                "UPDATE tasks SET screenshot_path = ? WHERE task_id = ?",
+                (screenshot_path, task_id)
+            )
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"Error updating screenshot path: {e}")
+            self.conn.rollback()
+    
+    def is_loyal_referral_credited(self, referrer_id, referral_id):
+        """Проверяет, был ли уже начислен преданный реферал"""
+        try:
+            self.cursor.execute("""
+                SELECT id FROM loyal_referrals_tracking 
+                WHERE referrer_id = ? AND referral_id = ?
+            """, (referrer_id, referral_id))
+            return self.cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Error checking loyal referral credit: {e}")
+            return False
+    
+    def mark_loyal_referral_credited(self, referrer_id, referral_id):
+        """Отмечает, что преданный реферал был начислен"""
+        try:
+            self.cursor.execute("""
+                INSERT INTO loyal_referrals_tracking (referrer_id, referral_id)
+                VALUES (?, ?)
+            """, (referrer_id, referral_id))
+            self.conn.commit()
+            logger.info(f"Marked loyal referral credited: {referrer_id} <- {referral_id}")
+        except Exception as e:
+            logger.error(f"Error marking loyal referral credited: {e}")
+            self.conn.rollback()
     
     def close(self):
         """Закрытие соединения с базой данных"""
-        self.conn.close()
+        if hasattr(self, 'conn'):
+            self.conn.close()
 
 # Глобальный экземпляр базы данных
 db = Database() 

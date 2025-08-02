@@ -212,6 +212,11 @@ async def credit_loyal_referral(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning(f"Referral {referral_id} not found in database")
             return
         
+        # Проверяем, не был ли уже начислен преданный реферал
+        if db.is_loyal_referral_credited(referrer_id, referral_id):
+            logger.info(f"Loyal referral already credited for {referrer_id} <- {referral_id}")
+            return
+        
         # Проверяем подписку реферала
         is_subscribed = await is_user_subscribed(context.bot, referral_id)
         logger.info(f"Referral {referral_id} subscription status: {is_subscribed}")
@@ -222,7 +227,9 @@ async def credit_loyal_referral(context: ContextTypes.DEFAULT_TYPE) -> None:
                 "UPDATE users SET loyal_referrals = loyal_referrals + 1 WHERE user_id = ?",
                 (referrer_id,)
             )
-            db.conn.commit()
+            
+            # Отмечаем, что преданный реферал был начислен
+            db.mark_loyal_referral_credited(referrer_id, referral_id)
             
             logger.info(f"Credited loyal referral for {referrer_id}")
             
@@ -316,22 +323,25 @@ async def check_loyalty_manual(update: Update, context: ContextTypes.DEFAULT_TYP
     
     processed = 0
     credited = 0
+    already_credited = 0
     
     for user_id, username, ref_by, joined_date in old_referrals:
         try:
+            # Проверяем, не был ли уже начислен преданный реферал
+            if db.is_loyal_referral_credited(ref_by, user_id):
+                already_credited += 1
+                processed += 1
+                continue
+            
             # Проверяем подписку
             if await is_user_subscribed(context.bot, user_id):
-                # Проверяем, не был ли уже начислен преданный реферал
-                db.cursor.execute("""
-                    SELECT loyal_referrals FROM users WHERE user_id = ?
-                """, (ref_by,))
-                current_loyal = db.cursor.fetchone()[0] or 0
-                
                 # Начисляем преданный реферал
                 db.cursor.execute("""
                     UPDATE users SET loyal_referrals = loyal_referrals + 1 WHERE user_id = ?
                 """, (ref_by,))
-                db.conn.commit()
+                
+                # Отмечаем, что преданный реферал был начислен
+                db.mark_loyal_referral_credited(ref_by, user_id)
                 
                 credited += 1
                 logger.info(f"Manually credited loyal referral: {ref_by} <- {user_id}")
@@ -354,7 +364,8 @@ async def check_loyalty_manual(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(
         f"✅ Проверка завершена!\n"
         f"📊 Обработано: {processed}\n"
-        f"💖 Начислено преданных рефералов: {credited}"
+        f"💖 Начислено преданных рефералов: {credited}\n"
+        f"🔄 Уже было начислено ранее: {already_credited}"
     )
 
 async def general_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
