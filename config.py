@@ -19,7 +19,7 @@ CHANNEL_ID = -1002090905218
 
 # Пути к файлам
 BASE_DIR = os.environ.get("BASE_DIR", os.path.dirname(__file__))
-DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE_DIR, "bot_database.db"))
+DB_PATH = os.environ.get("DB_PATH", "/data/bot_database.db")
 REMINDER_IMAGE_PATH = os.path.join(BASE_DIR, "reminder.png")
 WELCOME_IMAGE_PATH = os.path.join(BASE_DIR, "welcome.jpg")
 STATIC_DIR = os.environ.get("STATIC_DIR", BASE_DIR)
