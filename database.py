@@ -12,10 +12,20 @@ class Database:
             db_dir = os.path.dirname(DB_PATH)
             if db_dir and not os.path.exists(db_dir):
                 os.makedirs(db_dir, exist_ok=True)
+                # Устанавливаем права на запись
+                os.chmod(db_dir, 0o755)
                 logger.info(f"Created directory for database: {db_dir}")
             
-            # Подключаемся к БД с улучшенными настройками
-            self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+            # Проверяем права на запись в директорию
+            if not os.access(db_dir, os.W_OK):
+                logger.error(f"No write access to directory: {db_dir}")
+                # Пытаемся создать БД в текущей директории как fallback
+                fallback_path = "bot_database.db"
+                logger.info(f"Falling back to: {fallback_path}")
+                self.conn = sqlite3.connect(fallback_path, check_same_thread=False)
+            else:
+                # Подключаемся к БД с улучшенными настройками
+                self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
             self.cursor = self.conn.cursor()
             
             # Включаем WAL режим для лучшей производительности и надежности
