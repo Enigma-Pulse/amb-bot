@@ -222,25 +222,39 @@ async def credit_loyal_referral(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info(f"Referral {referral_id} subscription status: {is_subscribed}")
         
         if is_subscribed:
-            # Обновляем счетчик лояльных рефералов
-            db.cursor.execute(
-                "UPDATE users SET loyal_referrals = loyal_referrals + 1 WHERE user_id = ?",
-                (referrer_id,)
-            )
+            # Получаем текущие данные реферера
+            db.cursor.execute("""
+                SELECT loyal_referrals, used_loyal FROM users WHERE user_id = ?
+            """, (referrer_id,))
+            result = db.cursor.fetchone()
             
-            # Отмечаем, что преданный реферал был начислен
-            db.mark_loyal_referral_credited(referrer_id, referral_id)
-            
-            logger.info(f"Credited loyal referral for {referrer_id}")
-            
-            await context.bot.send_message(
-                chat_id=referrer_id,
-                text=(
-                    "🎉<b>ТВОЙ РЕФЕРАЛ СТАЛ ПРЕДАННЫМ💖</b>\n"
-                    "<b>➖Посмотри в профиле, хватает ли тебе на промо⁉️</b>"
-                ),
-                parse_mode=ParseMode.HTML
-            )
+            if result:
+                current_loyal, used_loyal = result
+                current_loyal = current_loyal or 0
+                used_loyal = used_loyal or 0
+                
+                # Увеличиваем счетчик преданных рефералов
+                new_loyal_referrals = current_loyal + 1
+                
+                # Обновляем счетчик
+                db.cursor.execute(
+                    "UPDATE users SET loyal_referrals = ? WHERE user_id = ?",
+                    (new_loyal_referrals, referrer_id)
+                )
+                
+                # Отмечаем, что преданный реферал был начислен
+                db.mark_loyal_referral_credited(referrer_id, referral_id)
+                
+                logger.info(f"Credited loyal referral for {referrer_id}: {current_loyal} -> {new_loyal_referrals} (used: {used_loyal})")
+                
+                await context.bot.send_message(
+                    chat_id=referrer_id,
+                    text=(
+                        "🎉<b>ТВОЙ РЕФЕРАЛ СТАЛ ПРЕДАННЫМ💖</b>\n"
+                        "<b>➖Посмотри в профиле, хватает ли тебе на промо⁉️</b>"
+                    ),
+                    parse_mode=ParseMode.HTML
+                )
         else:
             logger.info(f"Referral {referral_id} is not subscribed, no credit given")
             
@@ -325,47 +339,89 @@ async def check_loyalty_manual(update: Update, context: ContextTypes.DEFAULT_TYP
     credited = 0
     already_credited = 0
     
+    # Создаем словарь для подсчета реальных преданных рефералов
+    real_loyal_counts = {}
+    
     for user_id, username, ref_by, joined_date in old_referrals:
         try:
-            # Проверяем, не был ли уже начислен преданный реферал
-            if db.is_loyal_referral_credited(ref_by, user_id):
-                already_credited += 1
-                processed += 1
-                continue
-            
             # Проверяем подписку
             if await is_user_subscribed(context.bot, user_id):
-                # Начисляем преданный реферал
-                db.cursor.execute("""
-                    UPDATE users SET loyal_referrals = loyal_referrals + 1 WHERE user_id = ?
-                """, (ref_by,))
+                # Увеличиваем счетчик реальных преданных рефералов
+                if ref_by not in real_loyal_counts:
+                    real_loyal_counts[ref_by] = 0
+                real_loyal_counts[ref_by] += 1
                 
-                # Отмечаем, что преданный реферал был начислен
-                db.mark_loyal_referral_credited(ref_by, user_id)
-                
-                credited += 1
-                logger.info(f"Manually credited loyal referral: {ref_by} <- {user_id}")
-                
-                # Уведомляем реферера
-                await context.bot.send_message(
-                    chat_id=ref_by,
-                    text=(
-                        "🎉<b>ТВОЙ РЕФЕРАЛ СТАЛ ПРЕДАННЫМ💖</b>\n"
-                        "<b>➖Посмотри в профиле, хватает ли тебе на промо⁉️</b>"
-                    ),
-                    parse_mode=ParseMode.HTML
-                )
+                # Отмечаем в таблице отслеживания
+                if not db.is_loyal_referral_credited(ref_by, user_id):
+                    db.mark_loyal_referral_credited(ref_by, user_id)
+                    credited += 1
             
             processed += 1
             
         except Exception as e:
             logger.error(f"Error processing referral {user_id}: {e}")
     
+    # Теперь обновляем счетчики с учетом потраченных
+    updated_users = 0
+    for ref_by, real_loyal_count in real_loyal_counts.items():
+        try:
+            # Получаем текущие данные пользователя
+            db.cursor.execute("""
+                SELECT loyal_referrals, used_loyal FROM users WHERE user_id = ?
+            """, (ref_by,))
+            result = db.cursor.fetchone()
+            
+            if result:
+                current_loyal, used_loyal = result
+                used_loyal = used_loyal or 0
+                
+                # Устанавливаем правильный баланс: реальные преданные - потраченные
+                new_loyal_referrals = max(0, real_loyal_count - used_loyal)
+                
+                # Обновляем только если значение изменилось
+                if new_loyal_referrals != current_loyal:
+                    db.cursor.execute("""
+                        UPDATE users SET loyal_referrals = ? WHERE user_id = ?
+                    """, (new_loyal_referrals, ref_by))
+                    updated_users += 1
+                    logger.info(f"Updated loyal referrals for {ref_by}: {current_loyal} -> {new_loyal_referrals} (real: {real_loyal_count}, used: {used_loyal})")
+                
+        except Exception as e:
+            logger.error(f"Error updating user {ref_by}: {e}")
+    
+    # Обнуляем счетчики для тех, у кого нет реальных преданных рефералов
+    db.cursor.execute("""
+        SELECT user_id, loyal_referrals, used_loyal 
+        FROM users 
+        WHERE loyal_referrals > 0 AND user_id NOT IN ({})
+    """.format(','.join('?' * len(real_loyal_counts))), list(real_loyal_counts.keys()) if real_loyal_counts else [0])
+    
+    users_to_reset = db.cursor.fetchall()
+    reset_users = 0
+    
+    for user_id, current_loyal, used_loyal in users_to_reset:
+        try:
+            used_loyal = used_loyal or 0
+            new_loyal_referrals = max(0, 0 - used_loyal)  # 0 реальных - потраченные
+            
+            if new_loyal_referrals != current_loyal:
+                db.cursor.execute("""
+                    UPDATE users SET loyal_referrals = ? WHERE user_id = ?
+                """, (new_loyal_referrals, user_id))
+                reset_users += 1
+                logger.info(f"Reset loyal referrals for {user_id}: {current_loyal} -> {new_loyal_referrals}")
+        except Exception as e:
+            logger.error(f"Error resetting user {user_id}: {e}")
+    
+    db.conn.commit()
+    
     await update.message.reply_text(
         f"✅ Проверка завершена!\n"
-        f"📊 Обработано: {processed}\n"
-        f"💖 Начислено преданных рефералов: {credited}\n"
-        f"🔄 Уже было начислено ранее: {already_credited}"
+        f"📊 Обработано рефералов: {processed}\n"
+        f"💖 Начислено новых преданных: {credited}\n"
+        f"🔄 Обновлено пользователей: {updated_users}\n"
+        f"🔄 Сброшено пользователей: {reset_users}\n"
+        f"📈 Реальных преданных рефералов: {sum(real_loyal_counts.values())}"
     )
 
 async def general_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
